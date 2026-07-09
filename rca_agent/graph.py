@@ -1,89 +1,54 @@
+"""LangGraph pipeline: retrieve similar past incidents, then generate a structured RCA report."""
 from typing import TypedDict
 
-from langgraph.graph import StateGraph, END
+from langchain_chroma import Chroma
+from langgraph.graph import END, START, StateGraph
 
-from rca_agent.retriever import get_retriever
-from rca_agent.config import llm
+from rca_agent.config import CHROMA_DIR, embeddings, llm
+from rca_agent.schemas import RCAReport
+
+PROMPT = """You are an expert Site Reliability Engineer performing root-cause analysis.
+
+Similar past incidents from the knowledge base:
+{context}
+
+Current error:
+{query}
+
+Ground your analysis in the past incidents above. If none are relevant, \
+say so in the report and lower your confidence score."""
+
+retriever = Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings).as_retriever(
+    search_kwargs={"k": 4}
+)
+# Structured output guarantees a valid RCAReport — no manual validation or retry loop needed.
+analyst = llm.with_structured_output(RCAReport)
 
 
 class RCAState(TypedDict):
+    """Data flowing through the graph. Each node returns only the keys it updates."""
+
     query: str
     context: str
-    answer: str
-    retries: int
+    report: RCAReport
 
 
-retriever = get_retriever()
+def retrieve(state: RCAState) -> dict:
+    """Fetch the most similar past incidents from the vector store."""
+    docs = retriever.invoke(state["query"])
+    return {"context": "\n\n".join(doc.page_content for doc in docs)}
 
 
-# STEP 1: Retrieve documents
-def retrieve_docs(state: RCAState):
-    docs = docs = retriever.invoke(state["query"])
-    context = "\n".join(d.page_content for d in docs)
-    return {
-        **state,
-        "context": context
-    }
+def analyze(state: RCAState) -> dict:
+    """Ask the LLM for an RCA report grounded in the retrieved incidents."""
+    report = analyst.invoke(PROMPT.format(context=state["context"], query=state["query"]))
+    return {"report": report}
 
 
-# STEP 2: Generate RCA using LLM
-def generate_rca(state: RCAState):
-    prompt = f"""
-You are an expert Site Reliability Engineer.
-
-Context:
-{state["context"]}
-
-Error:
-{state["query"]}
-
-Provide:
-1. Root Cause
-2. Impact
-3. Fix
-"""
-    response = llm.invoke(prompt)
-    answer = response.content if hasattr(response, "content") else str(response)
-
-    return {
-        **state,
-        "answer": answer
-    }
-
-
-# STEP 3: Validate output
-def validate(state: RCAState):
-    if len(state["answer"]) < 100 and state["retries"] < 2:
-        return "retry"
-    return "done"
-
-
-# STEP 4: Retry handler
-def retry(state: RCAState):
-    return {
-        **state,
-        "retries": state["retries"] + 1
-    }
-
-
-# BUILD LANGGRAPH
 graph = StateGraph(RCAState)
-
-graph.add_node("retrieve", retrieve_docs)
-graph.add_node("generate", generate_rca)
-graph.add_node("retry", retry)
-
-graph.set_entry_point("retrieve")
-
-graph.add_edge("retrieve", "generate")
-graph.add_conditional_edges(
-    "generate",
-    validate,
-    {
-        "retry": "retry",
-        "done": END
-    }
-)
-graph.add_edge("retry", "retrieve")
-
+graph.add_node("retrieve", retrieve)
+graph.add_node("analyze", analyze)
+graph.add_edge(START, "retrieve")
+graph.add_edge("retrieve", "analyze")
+graph.add_edge("analyze", END)
 rca_graph = graph.compile()
