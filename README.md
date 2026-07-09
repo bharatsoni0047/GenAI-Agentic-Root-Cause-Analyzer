@@ -78,3 +78,15 @@ uvicorn main:app --reload
 - Impact
 - Recommended Fix
 - Use the response for faster debugging and incident resolution
+
+
+HOW TO RUN:-
+
+
+git clone https://github.com/bharatsoni0047/GenAI-Agentic-Root-Cause-Analyzer.git
+cd GenAI-Agentic-Root-Cause-Analyzer
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env        # then put your real GROQ_API_KEY in .env
+python -m rca_agent.ingest    # one-time: builds the vector store
+uvicorn rca_agent.app:app
