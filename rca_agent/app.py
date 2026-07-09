@@ -1,19 +1,21 @@
+"""FastAPI service exposing the RCA agent. Run: uvicorn rca_agent.app:app"""
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
-from rca_agent.schemas import RCARequest, RCAResponse
+
 from rca_agent.graph import rca_graph
+from rca_agent.schemas import RCAReport, RCARequest
 
-app = FastAPI(title="RCA LangGraph Agent")
+app = FastAPI(title="RCA Agent", version="2.0.0")
 
 
-@app.post("/rca", response_model=RCAResponse)
-async def get_rca(req: RCARequest):
-    initial_state = {
-        "query": req.error,
-        "context": "",
-        "answer": "",
-        "retries": 0
-    }
+@app.get("/health")
+def health() -> dict:
+    """Liveness probe for containers and load balancers."""
+    return {"status": "ok"}
 
-    result = await run_in_threadpool(rca_graph.invoke, initial_state)
-    return {"result": result["answer"]}
+
+@app.post("/rca", response_model=RCAReport)
+async def analyze_error(req: RCARequest) -> RCAReport:
+    """Run the retrieve → analyze graph and return a structured RCA report."""
+    result = await run_in_threadpool(rca_graph.invoke, {"query": req.error})
+    return result["report"]
